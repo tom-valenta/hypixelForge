@@ -74,6 +74,25 @@
   }
   input:focus{border-color:var(--ember);}
   .key-hint{font-size:11px; color:var(--text-dim); margin-top:2px;}
+
+  .star-btn{
+    flex:0 0 auto; width:44px; border-radius:8px; border:1px solid rgba(255,255,255,0.08);
+    background:var(--basalt); color:var(--text-dim); font-size:20px; line-height:1; cursor:pointer;
+    transition:color .15s, border-color .15s, transform .12s;
+  }
+  .star-btn:hover{border-color:var(--ember); color:var(--ember-hot); transform:translateY(-1px);}
+  .star-btn.active{color:var(--ember-hot); border-color:var(--ember); background:rgba(255,122,61,0.1);}
+
+  .favorites-row{display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;}
+  .favorite-chip{
+    display:flex; align-items:center; gap:6px; padding:5px 10px 5px 6px; border-radius:20px;
+    border:1px solid var(--border); background:var(--basalt-3); cursor:pointer; color:var(--text);
+    font-family:'JetBrains Mono', monospace; font-size:12px; transition:border-color .15s;
+  }
+  .favorite-chip:hover{border-color:var(--ember);}
+  .favorite-chip img{width:20px; height:20px; border-radius:5px; image-rendering:pixelated; display:block;}
+  .favorite-chip .remove{color:var(--text-dim); margin-left:2px; padding:0 2px; cursor:pointer; font-size:13px;}
+  .favorite-chip .remove:hover{color:var(--danger);}
   .forge-stats-row{display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 18px;}
   .stat-badge{
     flex:1 1 150px; background:var(--basalt-3); border:1px solid rgba(255,122,61,0.18);
@@ -129,8 +148,9 @@
     opacity:0.6;
   }
   .slot .slot-num{font-family:'JetBrains Mono', monospace; font-size:10px; letter-spacing:0.1em; color:var(--text-dim); text-transform:uppercase;}
-  .slot .item-name{font-size:16px; font-weight:600; margin:6px 0 10px; color:var(--ember-hot);}
+  .slot .item-name{font-size:16px; font-weight:600; margin:6px 0 10px; color:var(--ember-hot); display:flex; align-items:center; gap:8px;}
   .slot.idle .item-name{color:var(--text-dim); font-weight:500;}
+  .item-icon{width:24px; height:24px; image-rendering:pixelated; border-radius:5px; flex:0 0 auto;}
   .bar-track{height:8px; border-radius:6px; background:rgba(255,255,255,0.06); overflow:hidden; margin-bottom:10px;}
   .bar-fill{height:100%; background:linear-gradient(90deg, var(--crystal-dim), var(--crystal)); border-radius:6px; transition:width .4s linear;}
   .bar-fill.done{background:linear-gradient(90deg, #6bd66b, #a3f7a3);}
@@ -192,9 +212,13 @@
       </div>
       <div class="field">
         <label for="username">Minecraft username</label>
-        <input type="text" id="username" placeholder="e.g. Technoblade" autocomplete="off">
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="username" placeholder="e.g. Technoblade" autocomplete="off" style="flex:1; min-width:0;">
+          <button type="button" id="favoriteBtn" class="star-btn" title="Save as favorite">☆</button>
+        </div>
       </div>
     </div>
+    <div class="favorites-row" id="favoritesRow" style="display:none;"></div>
     <div class="btn-row">
       <button class="go" id="searchBtn">Check the Forge</button>
       <button class="notify-btn" id="notifyBtn" type="button">🔔 Enable slot-ready alerts (sound + notification)</button>
@@ -358,6 +382,62 @@ function fmtDuration(totalSeconds){
   return parts.join(" ");
 }
 
+// ---- Item icons: pulled straight from Hypixel's own public items API. ----
+// ---- Most SkyBlock items are custom "skull" items with a base64-encoded ----
+// ---- Mojang skin texture attached; we extract the texture hash from that ----
+// ---- and hand it to mc-heads.net to render as a small icon. This is the ----
+// ---- same approach sites like SkyCrypt use — no third-party texture pack ----
+// ---- involved, just Hypixel's own official item data.
+const ITEM_ICON_CACHE_KEY = "forgeWatch.itemIconHashes.v2";
+const ITEM_ICON_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // refresh once a day
+let itemIconHashes = {};
+
+function extractTextureHash(skinB64){
+  try {
+    const decoded = JSON.parse(atob(skinB64));
+    const url = decoded && decoded.textures && decoded.textures.SKIN && decoded.textures.SKIN.url;
+    if (!url) return null;
+    return url.split("/").pop();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function loadItemIcons(){
+  try {
+    const cached = localStorage.getItem(ITEM_ICON_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed && parsed.fetchedAt && (Date.now() - parsed.fetchedAt) < ITEM_ICON_CACHE_TTL_MS && parsed.hashes) {
+        itemIconHashes = parsed.hashes;
+        return;
+      }
+    }
+  } catch (e) { /* fall through and refetch */ }
+
+  try {
+    const res = await fetch("https://api.hypixel.net/v2/resources/skyblock/items");
+    if (!res.ok) return;
+    const data = await res.json();
+    const items = (data && data.items) || [];
+    const hashes = {};
+    items.forEach(item => {
+      if (item.id && item.skin && item.skin.value) {
+        const hash = extractTextureHash(item.skin.value);
+        if (hash) hashes[item.id] = hash;
+      }
+    });
+    itemIconHashes = hashes;
+    try {
+      localStorage.setItem(ITEM_ICON_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), hashes }));
+    } catch (e) { /* storage full or unavailable, no big deal */ }
+  } catch (e) {
+    // Offline or blocked — cards will just fall back to the no-icon look.
+  }
+}
+let itemIconsReady = loadItemIcons();
+
+
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const searchBtn = $("searchBtn");
@@ -368,6 +448,9 @@ const apiKeyEl = $("apiKey");
 const rememberKeyEl = $("rememberKey");
 const forgetKeyWrap = $("forgetKeyWrap");
 const forgetKeyBtn = $("forgetKeyBtn");
+const usernameEl = $("username");
+const favoritesRow = $("favoritesRow");
+const favoriteBtn = $("favoriteBtn");
 
 // ---- Remember-my-key: local-only persistence via localStorage ----
 // This is a page you save/run yourself (not a hosted app), so this key
@@ -413,6 +496,102 @@ forgetKeyBtn.addEventListener("click", (e) => {
 });
 
 loadSavedKey();
+
+// ---- Favorite players: local-only list so you don't have to retype ----
+// ---- the same usernames every time. Stores just the usernames; avatars ----
+// ---- are fetched by name directly (mc-heads.net accepts either name or uuid).
+const FAVORITES_STORAGE_KEY = "forgeWatch.favorites";
+
+function loadFavorites(){
+  try {
+    const saved = localStorage.getItem(FAVORITES_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : [];
+    if (!Array.isArray(parsed)) return [];
+    // Guard against any corrupted/non-string entries from older versions.
+    return parsed.filter(f => typeof f === "string" && f.trim().length > 0);
+  } catch (e) { return []; }
+}
+function saveFavorites(){
+  try { localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favorites)); } catch (e) {}
+}
+let favorites = loadFavorites();
+
+function isFavorite(name){
+  if (typeof name !== "string") return false;
+  return favorites.some(f => typeof f === "string" && f.toLowerCase() === name.toLowerCase());
+}
+
+function updateFavoriteBtnUI(){
+  const name = usernameEl.value.trim();
+  if (name && isFavorite(name)) {
+    favoriteBtn.textContent = "★";
+    favoriteBtn.classList.add("active");
+    favoriteBtn.title = "Remove from favorites";
+  } else {
+    favoriteBtn.textContent = "☆";
+    favoriteBtn.classList.remove("active");
+    favoriteBtn.title = "Save as favorite";
+  }
+}
+
+function renderFavorites(){
+  favoritesRow.innerHTML = "";
+  if (!favorites.length) { favoritesRow.style.display = "none"; return; }
+  favoritesRow.style.display = "flex";
+  favorites.forEach(name => {
+    const chip = document.createElement("div");
+    chip.className = "favorite-chip";
+
+    const img = document.createElement("img");
+    img.src = `https://mc-heads.net/avatar/${encodeURIComponent(name)}/20`;
+    img.alt = "";
+    chip.appendChild(img);
+
+    const label = document.createElement("span");
+    label.textContent = name;
+    chip.appendChild(label);
+
+    const remove = document.createElement("span");
+    remove.className = "remove";
+    remove.textContent = "✕";
+    remove.title = "Remove favorite";
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation();
+      favorites = favorites.filter(f => typeof f === "string" && f.toLowerCase() !== name.toLowerCase());
+      saveFavorites();
+      renderFavorites();
+      updateFavoriteBtnUI();
+    });
+    chip.appendChild(remove);
+
+    // Clicking anywhere else on the chip loads that player's Forge.
+    chip.addEventListener("click", () => {
+      usernameEl.value = name;
+      updateFavoriteBtnUI();
+      runSearch();
+    });
+
+    favoritesRow.appendChild(chip);
+  });
+}
+
+favoriteBtn.addEventListener("click", () => {
+  const name = usernameEl.value.trim() || lastUsername;
+  if (!name) return;
+  if (isFavorite(name)) {
+    favorites = favorites.filter(f => typeof f === "string" && f.toLowerCase() !== name.toLowerCase());
+  } else {
+    favorites.push(name);
+  }
+  saveFavorites();
+  renderFavorites();
+  updateFavoriteBtnUI();
+});
+
+usernameEl.addEventListener("input", updateFavoriteBtnUI);
+
+renderFavorites();
+updateFavoriteBtnUI();
 
 let activeTimers = [];
 let lastProfiles = null;
@@ -576,6 +755,29 @@ function findForgeCandidates(obj, path = "", depth = 0, out = []) {
   return out;
 }
 
+// We have no way to ask the Hypixel API "what exact real-world timestamp did
+// the current mayor take office" — that field simply isn't exposed. But we
+// CAN track it ourselves: the first time this page ever sees a given mayor
+// name, we stamp that moment in localStorage as "mayorSince" for that mayor.
+// From then on (as long as the mayor hasn't changed again), any forge
+// process whose startTime is at/after that stamp is treated as having
+// started while this mayor's perk was active, and gets the mayor bonus.
+// Caveat: if the mayor changed before you ever had this page open, forges
+// started in that gap will be missed until the page happens to catch the
+// change — there's no way around that without a server-side timestamp.
+const MAYOR_TRACKER_KEY = "forgeWatch.mayorTracker";
+function getMayorSince(mayorName){
+  if (!mayorName) return null;
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(MAYOR_TRACKER_KEY) || "null"); } catch (e) { stored = null; }
+  const now = Date.now();
+  if (!stored || stored.name !== mayorName) {
+    stored = { name: mayorName, since: now };
+    try { localStorage.setItem(MAYOR_TRACKER_KEY, JSON.stringify(stored)); } catch (e) { /* ignore */ }
+  }
+  return stored.since;
+}
+
 async function getForgeReduction(uuid, profile){
   let quickForgeLevel = 0;
   let forgeCandidates = [];
@@ -624,7 +826,10 @@ async function getForgeReduction(uuid, profile){
     ? Math.min(30, 10 + quickForgeLevel * 0.5 + Math.floor(quickForgeLevel / 20) * 10)
     : 0;
   const totalPct = Math.min(90, quickForgePct + mayorBonus);
-  return { quickForgeLevel, quickForgePct, mayorBonus, mayorName, totalPct, forgeCandidates };
+  // Only meaningful if mayorBonus > 0 — see getMayorSince's comment for why
+  // this is a "first time we noticed" stamp rather than the true term start.
+  const mayorSince = mayorBonus > 0 ? getMayorSince(mayorName) : null;
+  return { quickForgeLevel, quickForgePct, mayorBonus, mayorName, mayorSince, totalPct, forgeCandidates };
 }
 
 function renderProfilePicker(profiles){
@@ -651,6 +856,8 @@ function pickDefaultProfile(profiles){
 async function renderProfile(profile){
   activeTimers.forEach(t => clearInterval(t));
   activeTimers = [];
+
+  await itemIconsReady;
 
   const member = profile.members ? profile.members[lastUuid] : null;
   resultsEl.innerHTML = "";
@@ -685,14 +892,17 @@ async function renderProfile(profile){
     mayorBadge.className = "stat-badge" + (reduction.mayorBonus > 0 ? "" : " stat-badge-off");
     mayorBadge.innerHTML = reduction.mayorName
       ? `<div class="stat-label">Mayor</div>
-         <div class="stat-value">${reduction.mayorName}${reduction.mayorBonus ? ` <span class="stat-sub">-${reduction.mayorBonus}% (new forges only)</span>` : ""}</div>`
+         <div class="stat-value">${reduction.mayorName}${reduction.mayorBonus ? ` <span class="stat-sub">-${reduction.mayorBonus}% (forges started since we detected them in office)</span>` : ""}</div>`
       : `<div class="stat-label">Mayor</div>
          <div class="stat-value stat-value-off">Unknown</div>`;
 
     const totalBadge = document.createElement("div");
     totalBadge.className = "stat-badge stat-badge-total";
-    totalBadge.innerHTML = `<div class="stat-label">Reduction applied to countdowns below</div>
-      <div class="stat-value stat-value-total">-${reduction.quickForgePct.toFixed(1)}%</div>`;
+    totalBadge.innerHTML = reduction.mayorBonus > 0
+      ? `<div class="stat-label">Max reduction (see each slot below)</div>
+         <div class="stat-value stat-value-total">-${reduction.totalPct.toFixed(1)}%</div>`
+      : `<div class="stat-label">Reduction applied to countdowns below</div>
+         <div class="stat-value stat-value-total">-${reduction.quickForgePct.toFixed(1)}%</div>`;
 
     statsRow.appendChild(qfBadge);
     statsRow.appendChild(mayorBadge);
@@ -743,22 +953,35 @@ async function renderProfile(profile){
       const id = entry.id || "UNKNOWN";
       const start = entry.startTime;
       const rawDurationSec = FORGE_DURATIONS[id];
-      // IMPORTANT: only Quick Forge (a HOTM perk) applies retroactively to
-      // forges that are already running. Cole the Miner's "Molten Forge"
-      // mayor perk explicitly does NOT apply retroactively — it only
-      // discounts forges *started* while that perk is active. Since we
-      // can't know what the mayor situation was at the moment this specific
-      // process began, applying the current mayor bonus here would make
-      // already-running slots appear to finish earlier than they actually
-      // will. So: quick forge only for the live countdown; mayor bonus is
-      // shown separately as informational context for future forges.
-      const durationSec = rawDurationSec ? rawDurationSec * (1 - reduction.quickForgePct / 100) : rawDurationSec;
+      // Quick Forge (a HOTM perk) applies retroactively to forges that are
+      // already running. Cole the Miner's "Molten Forge" mayor perk does NOT
+      // apply retroactively — it only discounts forges *started* while that
+      // perk is active. We can't get an exact "took office at" timestamp
+      // from the API, but we track the first moment this page saw the
+      // current mayor (see getMayorSince) and treat any process that
+      // started at/after that moment as eligible. So: a slot only gets the
+      // mayor bonus if it began after we detected this mayor being in
+      // office; older still-running slots correctly get Quick Forge only.
+      const mayorAppliesToSlot = reduction.mayorBonus > 0 && reduction.mayorSince !== null && start >= reduction.mayorSince;
+      const slotPct = reduction.quickForgePct + (mayorAppliesToSlot ? reduction.mayorBonus : 0);
+      const durationSec = rawDurationSec ? rawDurationSec * (1 - slotPct / 100) : rawDurationSec;
 
       const card = document.createElement("div");
       card.className = "slot";
       const nameEl = document.createElement("div");
       nameEl.className = "item-name";
-      nameEl.textContent = prettyName(id);
+      const iconHash = itemIconHashes[id];
+      if (iconHash) {
+        const iconImg = document.createElement("img");
+        iconImg.className = "item-icon";
+        iconImg.src = `https://mc-heads.net/head/${iconHash}/24`;
+        iconImg.alt = "";
+        iconImg.onerror = () => { iconImg.style.display = "none"; };
+        nameEl.appendChild(iconImg);
+      }
+      const nameText = document.createElement("span");
+      nameText.textContent = prettyName(id);
+      nameEl.appendChild(nameText);
 
       const idTag = document.createElement("div");
       idTag.className = "unknown-note";
@@ -796,6 +1019,25 @@ async function renderProfile(profile){
         const endTime = start + durationSec * 1000;
         const processKey = `${lastUuid}:${profile.profile_id || profile.cute_name}:${slotNum}:${id}:${start}`;
         footLabel.textContent = "Time remaining";
+        const parts = [];
+        if (reduction.quickForgePct > 0) parts.push(`Quick Forge -${reduction.quickForgePct.toFixed(1)}%`);
+        if (mayorAppliesToSlot) parts.push(`${reduction.mayorName} -${reduction.mayorBonus}%`);
+        if (parts.length) {
+          const reductionNote = document.createElement("div");
+          reductionNote.className = "unknown-note";
+          reductionNote.style.marginTop = "-6px";
+          reductionNote.style.marginBottom = "8px";
+          reductionNote.textContent = `${parts.join(" · ")} (total -${slotPct.toFixed(1)}%)`;
+          card.insertBefore(reductionNote, barTrack);
+        }
+        if (reduction.mayorBonus > 0 && !mayorAppliesToSlot) {
+          const mayorNote = document.createElement("div");
+          mayorNote.className = "unknown-note";
+          mayorNote.style.marginTop = parts.length ? "0" : "-6px";
+          mayorNote.style.marginBottom = "8px";
+          mayorNote.textContent = `Started before ${reduction.mayorName} took office — no mayor bonus applied`;
+          card.insertBefore(mayorNote, barTrack);
+        }
         const tick = () => {
           const remainMs = endTime - Date.now();
           if (remainMs <= 0) {
@@ -875,6 +1117,8 @@ async function runSearch(){
     lastUuid = player.uuid;
     lastUsername = player.name;
     lastKey = key;
+    usernameEl.value = player.name;
+    updateFavoriteBtnUI();
 
     setStatus("Fetching SkyBlock profiles...");
     const profiles = await fetchProfiles(player.uuid, key);
